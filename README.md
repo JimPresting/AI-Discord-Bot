@@ -141,6 +141,8 @@
 
 4. **Add Bot Code to index.js**:
 
+// IMPORTANT: Discord has a 2000 character message limit. To handle AI's long responses, we implement message chunking logic below. This splits large responses at paragraph or sentence boundaries and sends them as multiple sequential messages.
+
 ```javascript
 require('dotenv').config();
 const { Client, GatewayIntentBits } = require('discord.js');
@@ -196,17 +198,35 @@ client.on('messageCreate', async message => {
 
     console.log(`Received question from channel ${channelId} by ${message.author.tag}: "${question}"`);
 
-    try {
-        // Show typing indicator
-        await message.channel.sendTyping();
+    // Show "typing..." continuously while waiting for response
+    const typingInterval = setInterval(() => {
+        message.channel.sendTyping().catch(err => {
+            console.error('Error sending typing indicator:', err);
+            clearInterval(typingInterval);
+        });
+    }, 5000); // Send typing indicator every 5 seconds
 
-        // 4. Send the question and channel ID to n8n
+    // For very long processes, send a status update
+    let statusMessageSent = false;
+    const statusTimeout = setTimeout(() => {
+        message.reply("I'm still working on your request. This might take a bit longer than usual.");
+        statusMessageSent = true;
+    }, 20000); // Send status message after 20 seconds
+
+    try {
+        // 4. Send the question and channel ID to n8n with increased timeout
         const responseFromN8n = await axios.post(n8nWebhookUrl, {
             question: question,
             channelId: channelId,
             userId: message.author.id,
             userName: message.author.username
+        }, {
+            timeout: 300000 // Increase timeout to 5 minutes (300 seconds)
         });
+
+        // Clear the intervals
+        clearInterval(typingInterval);
+        clearTimeout(statusTimeout);
 
         // Debug logging of complete response
         console.log('Complete response from n8n:', JSON.stringify(responseFromN8n.data));
@@ -245,14 +265,64 @@ client.on('messageCreate', async message => {
 
         // 6. Send the answer to the Discord channel
         if (answer) {
-            message.reply(answer); // Replies directly to the original message
-            console.log(`Sent answer from n8n: "${answer}"`);
+            // Check if the answer exceeds Discord's character limit (2000)
+            if (answer.length <= 2000) {
+                // Standard reply if message is short enough
+                message.reply(answer);
+                console.log(`Sent answer from n8n: "${answer.substring(0, 100)}..."`);
+            } else {
+                // Split long messages into chunks of 1900 characters (leaving room for formatting)
+                const chunks = [];
+                let temp = answer;
+                
+                while (temp.length > 0) {
+                    // Find a good breaking point (preferably at a paragraph or sentence)
+                    let breakPoint = 1900;
+                    if (temp.length > breakPoint) {
+                        // Try to find paragraph break
+                        const paragraphBreak = temp.lastIndexOf('\n\n', breakPoint);
+                        if (paragraphBreak > breakPoint / 2) {
+                            breakPoint = paragraphBreak;
+                        } else {
+                            // Try to find sentence break
+                            const sentenceBreak = temp.lastIndexOf('. ', breakPoint);
+                            if (sentenceBreak > breakPoint / 2) {
+                                breakPoint = sentenceBreak + 1; // Include the period
+                            }
+                        }
+                    } else {
+                        breakPoint = temp.length;
+                    }
+                    
+                    chunks.push(temp.substring(0, breakPoint));
+                    temp = temp.substring(breakPoint);
+                }
+                
+                // Send first chunk as a reply to the original message
+                await message.reply(chunks[0]);
+                console.log(`Sent first chunk of answer (${chunks[0].length} chars)`);
+                
+                // Send remaining chunks as follow-up messages
+                for (let i = 1; i < chunks.length; i++) {
+                    await message.channel.send(chunks[i]);
+                    console.log(`Sent chunk ${i+1} of ${chunks.length} (${chunks[i].length} chars)`);
+                    
+                    // Small delay between messages to avoid rate limiting
+                    if (i < chunks.length - 1) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                }
+            }
         } else {
             message.reply("I did not receive a valid answer from my n8n workflow.");
             console.log('Received empty or invalid answer structure from n8n:', responseFromN8n.data);
         }
 
     } catch (error) {
+        // Clear the intervals on error
+        clearInterval(typingInterval);
+        clearTimeout(statusTimeout);
+
         console.error('Error interacting with n8n or Discord:', error.message);
         message.reply("Oops, something went wrong when communicating with n8n. Please try again later.");
         // Detailed error handling for n8n response errors
