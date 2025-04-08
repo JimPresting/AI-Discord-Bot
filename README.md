@@ -130,7 +130,8 @@
    DISCORD_BOT_TOKEN=your_bot_token_from_developer_portal
    N8N_WEBHOOK_URL=your_n8n_webhook_production_url_from_part1
    # Optional: Uncomment to restrict bot to a specific channel
-   # TARGET_CHANNEL_ID=your_channel_id
+   # TARGET_CHANNEL_ID=your_channel_id               # you can leave that one empty and it will be accessible everywhere 
+
    ```
 
 3. **Create Bot Code**:
